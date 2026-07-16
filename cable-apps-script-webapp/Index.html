@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ultimate Cable Sizing Tool</title>
+  <style><?!= include('Styles'); ?></style>
+</head>
+<body class="dark">
+
+<div id="loading" class="loading-overlay">
+  <div class="spinner"></div>
+  <p>Đang tải dữ liệu kỹ thuật...</p>
+</div>
+
+<header>
+  <div class="header-container">
+    <div>
+      <small>Electrical Engineering Toolkit</small>
+      <h1>Ultimate Cable Sizing</h1>
+    </div>
+    <button id="theme-toggle" class="theme-btn" onclick="toggleTheme()">
+      <span class="theme-sun">☀️</span>
+      <span class="theme-moon">🌙</span>
+    </button>
+  </div>
+</header>
+
+<div id="alert-banner" class="alert-banner hidden">
+  <span id="alert-msg"></span>
+  <button onclick="hideAlert()" class="close-alert">&times;</button>
+</div>
+
+<main>
+  <!-- TAB 1: TÍNH TOÁN -->
+  <div id="tab-calc" class="tab-content active">
+    <div class="two-col-layout">
+      <!-- Input Panel -->
+      <section class="card">
+        <h2>Thông số Tuyến & Tải</h2>
+        <div class="grid">
+          <label>Dự án
+            <select id="project"></select>
+          </label>
+          <label>Mã tuyến
+            <input id="cableCode" value="CBL-001">
+          </label>
+          <label class="wide">Tên tải
+            <input id="loadName" value="Bơm cấp nước">
+          </label>
+          <label>Tủ nguồn
+            <input id="sourcePanel" value="MDB-01">
+          </label>
+          <label>Thiết bị đích
+            <input id="destinationPanel" value="PUMP-01">
+          </label>
+          <label>Hệ thống điện
+            <select id="phase" onchange="onPhaseChange()">
+              <option value="3">3 pha</option>
+              <option value="1">1 pha</option>
+            </select>
+          </label>
+          <label>Điện áp (V)
+            <input id="voltage" type="number" value="380">
+          </label>
+          <label>Công suất (kW)
+            <input id="power" type="number" value="160">
+          </label>
+          <label>cosφ
+            <input id="pf" type="number" step="0.01" value="0.85">
+          </label>
+          <label>Hiệu suất
+            <input id="eff" type="number" step="0.01" value="0.92">
+          </label>
+          <label>Chiều dài một chiều (m)
+            <input id="length" type="number" value="650">
+          </label>
+          <label>Vật liệu
+            <select id="material" onchange="calculate()">
+              <option value="CU">Đồng (CU)</option>
+              <option value="AL">Nhôm (AL)</option>
+            </select>
+          </label>
+          <label>Cách điện
+            <select id="insulation" onchange="calculate()">
+              <option value="XLPE">XLPE</option>
+              <option value="PVC">PVC</option>
+            </select>
+          </label>
+          <label>Hệ số dự phòng
+            <input id="reserve" type="number" step="0.05" value="1.25" onchange="calculate()">
+          </label>
+          <label>Nhiệt độ môi trường (°C)
+            <input id="ambient" type="number" value="30" onchange="calculate()">
+          </label>
+          <label>Số mạch đi chung
+            <input id="circuits" type="number" value="1" onchange="calculate()">
+          </label>
+          <label>Giới hạn sụt áp (%)
+            <input id="maxDrop" type="number" step="0.1" value="5" onchange="calculate()">
+          </label>
+          
+          <label>Dây trung tính (Sn)
+            <select id="neutralRule" onchange="calculate()">
+              <option value="Auto">Tự động (IEC)</option>
+              <option value="100">100% Tiết diện pha</option>
+              <option value="50">50% Tiết diện pha</option>
+            </select>
+          </label>
+        </div>
+        <button class="primary-btn" onclick="calculate()">Tính toán</button>
+      </section>
+
+      <!-- Output Panel -->
+      <div class="result-layout">
+        <section class="card recommend-card">
+          <h2>Phương án đề xuất</h2>
+          
+          <div class="pricing-tabs">
+            <button id="btn-opt-eco" class="opt-tab active" onclick="selectOption('eco')">Kinh tế</button>
+            <button id="btn-opt-few" class="opt-tab" onclick="selectOption('few')">Ít tuyến nhất</button>
+            <button id="btn-opt-back" class="opt-tab" onclick="selectOption('back')">Dự phòng tốt</button>
+          </div>
+
+          <div class="hero-result">
+            <span id="opt-title">PHƯƠNG ÁN KINH TẾ</span>
+            <strong id="recommendation">—</strong>
+            <p id="calc-status">Chưa có kết quả</p>
+          </div>
+
+          <div class="metrics">
+            <div>
+              <span>Dòng tải (I_load)</span>
+              <b id="loadCurrent">—</b>
+            </div>
+            <div>
+              <span>Dòng thiết kế (Ib)</span>
+              <b id="designCurrent">—</b>
+            </div>
+            <div>
+              <span>Dòng hiệu chỉnh (Iz)</span>
+              <b id="correctedAmpacity">—</b>
+            </div>
+            <div>
+              <span>Sụt áp (%)</span>
+              <b id="drop">—</b>
+            </div>
+          </div>
+        </section>
+
+        <!-- Auxiliary details -->
+        <section class="card">
+          <h2>Hệ thống phụ trợ & bảo vệ</h2>
+          <div class="aux-grid">
+            <div class="aux-item">
+              <div class="aux-icon">⚡</div>
+              <div>
+                <h4>Thiết bị bảo vệ (MCCB)</h4>
+                <p id="aux-mccb">—</p>
+              </div>
+            </div>
+            <div class="aux-item">
+              <div class="aux-icon">🌱</div>
+              <div>
+                <h4>Dây Trung tính & PE</h4>
+                <p id="aux-n-pe">—</p>
+              </div>
+            </div>
+            <div class="aux-item">
+              <div class="aux-icon">📁</div>
+              <div>
+                <h4>Ống luồn đề xuất</h4>
+                <p id="aux-conduit">—</p>
+              </div>
+            </div>
+            <div class="aux-item">
+              <div class="aux-icon">📊</div>
+              <div>
+                <h4>Máng cáp & Lấp đầy</h4>
+                <p id="aux-tray">—</p>
+              </div>
+            </div>
+          </div>
+          <div id="imbalance-warning" class="warning-box hidden"></div>
+        </section>
+
+        <!-- Saving -->
+        <section class="card">
+          <h2>Lưu tuyến cáp</h2>
+          <input type="hidden" id="editingRecordId" value="">
+          <input type="hidden" id="editingRecordVersion" value="">
+          <div class="grid">
+            <label>Trạng thái
+              <select id="recordStatus">
+                <option value="Dự kiến">Dự kiến</option>
+                <option value="Đã duyệt">Đã duyệt</option>
+                <option value="Thi công">Thi công</option>
+                <option value="Hoàn thành">Hoàn thành</option>
+              </select>
+            </label>
+            <label class="wide">Ghi chú tuyến
+              <input id="notes" placeholder="Nhập ghi chú hoặc biên bản kiểm tra...">
+            </label>
+          </div>
+          <button class="success-btn" onclick="saveRecord()">Lưu vào Google Sheet</button>
+          <p id="saveStatus" class="status-msg"></p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 2: TUYẾN CÁP -->
+  <div id="tab-routes" class="tab-content">
+    <section class="card">
+      <div class="search-header">
+        <h2>Quản lý tuyến cáp</h2>
+        <button class="secondary-btn" onclick="exportCSV()">Xuất dữ liệu CSV</button>
+      </div>
+      <div class="search-bar">
+        <input id="search-input" oninput="filterRoutes()" placeholder="Tìm theo mã tuyến, tên tải, tủ nguồn, dự án...">
+      </div>
+      <div id="routes-list" class="routes-container">
+        <p class="empty-msg">Đang tải danh sách tuyến...</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- TAB 3: DASHBOARD -->
+  <div id="tab-dash" class="tab-content">
+    <div class="dashboard-grid">
+      <section class="card kpi-card">
+        <h3>Tổng số tuyến</h3>
+        <strong id="dash-total-routes">0</strong>
+        <span>Tuyến cáp hoạt động</span>
+      </section>
+      <section class="card kpi-card">
+        <h3>Tổng chiều dài</h3>
+        <strong id="dash-total-length">0 m</strong>
+        <span>Chiều dài các tuyến</span>
+      </section>
+      <section class="card kpi-card">
+        <h3>Khối lượng Đồng</h3>
+        <strong id="dash-cu-mass">0 kg</strong>
+        <span>Ước tính ruột Cu</span>
+      </section>
+      <section class="card kpi-card">
+        <h3>Khối lượng Nhôm</h3>
+        <strong id="dash-al-mass">0 kg</strong>
+        <span>Ước tính ruột Al</span>
+      </section>
+    </div>
+
+    <div class="two-col-layout">
+      <section class="card">
+        <h2>Trạng thái thi công</h2>
+        <div id="status-chart-container" class="chart-container"></div>
+      </section>
+      <section class="card">
+        <h2>Số lượng tuyến theo dự án</h2>
+        <div id="project-chart-container" class="chart-container"></div>
+      </section>
+    </div>
+
+    <section class="card alert-section">
+      <h2>Tuyến có sụt áp cao (&gt; 3%) hoặc Cảnh báo</h2>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Mã tuyến</th>
+              <th>Dự án</th>
+              <th>Tên tải</th>
+              <th>Cấu hình</th>
+              <th>Sụt áp</th>
+              <th>Trạng thái</th>
+            </tr>
+          </thead>
+          <tbody id="dash-warning-routes">
+            <tr>
+              <td colspan="6" class="empty-msg">Không có tuyến cảnh báo.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- TAB 4: DANH MỤC -->
+  <div id="tab-catalog" class="tab-content">
+    <section class="card">
+      <div class="catalog-tabs">
+        <button id="cat-btn-cables" class="opt-tab active" onclick="switchCatalog('cables')">Danh mục Cáp</button>
+        <button id="cat-btn-breakers" class="opt-tab" onclick="switchCatalog('breakers')">MCCB</button>
+        <button id="cat-btn-conduits" class="opt-tab" onclick="switchCatalog('conduits')">Ống Luồn</button>
+        <button id="cat-btn-trays" class="opt-tab" onclick="switchCatalog('trays')">Máng Cáp</button>
+      </div>
+      <div id="cat-content" class="table-wrapper">
+        <p class="empty-msg">Đang tải danh mục...</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- TAB 5: CÀI ĐẶT -->
+  <div id="tab-settings" class="tab-content">
+    <section class="card">
+      <h2>Tham số hệ thống</h2>
+      <button class="secondary-btn" style="margin-bottom: 20px;" onclick="refreshSettingsCache()">Lấy lại cấu hình từ Google Sheet</button>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Khóa cấu hình</th>
+              <th>Giá trị</th>
+            </tr>
+          </thead>
+          <tbody id="settings-table-body">
+            <tr>
+              <td colspan="2" class="empty-msg">Đang tải cấu hình...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+
+<nav class="bottom-nav">
+  <button id="nav-calc" class="nav-item active" onclick="switchTab('calc')">
+    <span class="nav-icon">✏️</span>
+    <span class="nav-label">Tính toán</span>
+  </button>
+  <button id="nav-routes" class="nav-item" onclick="switchTab('routes')">
+    <span class="nav-icon">📋</span>
+    <span class="nav-label">Tuyến cáp</span>
+  </button>
+  <button id="nav-dash" class="nav-item" onclick="switchTab('dash')">
+    <span class="nav-icon">📊</span>
+    <span class="nav-label">Dashboard</span>
+  </button>
+  <button id="nav-catalog" class="nav-item" onclick="switchTab('catalog')">
+    <span class="nav-icon">📖</span>
+    <span class="nav-label">Danh mục</span>
+  </button>
+  <button id="nav-settings" class="nav-item" onclick="switchTab('settings')">
+    <span class="nav-icon">⚙️</span>
+    <span class="nav-label">Cài đặt</span>
+  </button>
+</nav>
+
+<script><?!= include('JavaScript'); ?></script>
+</body>
+</html>

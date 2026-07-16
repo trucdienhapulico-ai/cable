@@ -1,0 +1,181 @@
+Bạn là kỹ sư phần mềm kiêm kỹ sư thiết kế điện. Hãy tiếp tục phát triển dự án Ultimate Cable Sizing Tool theo kiến trúc:
+Google Apps Script chạy Web App.
+Google Sheet quản lý toàn bộ dữ liệu.
+Không dùng Netlify, GitHub, Supabase hoặc máy chủ riêng.
+Website phải chạy tốt trên điện thoại.
+Dữ liệu kỹ thuật phải đọc động từ Google Sheet, hạn chế viết cứng trong mã.
+Google Sheet hiện có
+Spreadsheet ID:
+1TD2JsMVwRk0KXUCPbtRiKF4UePzfyiw5LX5FKzJwlHU
+Các sheet:
+CableData
+CableCatalog
+TemperatureFactor
+GroupingFactor
+ConduitCatalog
+Settings
+Projects
+ChangeLog
+Dashboard
+Cấu trúc Apps Script
+Dự án gồm:
+Code.gs
+Index.html
+Styles.html
+JavaScript.html
+appsscript.json
+Chức năng hiện tại
+Nhập tải 1 pha hoặc 3 pha.
+Nhập công suất, điện áp, cosφ, hiệu suất, chiều dài.
+Chọn cáp đồng hoặc nhôm.
+Chọn cách điện PVC hoặc XLPE.
+Hiệu chỉnh dòng theo nhiệt độ và số mạch đi chung.
+Tính dòng tải và dòng thiết kế.
+Tính sụt áp.
+Tự đề xuất cáp đơn hoặc từ 2 đến 6 tuyến cáp song song.
+Đề xuất cỡ ống luồn.
+Lưu kết quả vào CableData.
+Ghi nhật ký vào ChangeLog.
+Đọc danh mục cáp, hệ số và tham số từ Google Sheet.
+Yêu cầu phát triển tiếp
+1. Quản lý tuyến cáp
+Bổ sung:
+Danh sách các tuyến cáp đã lưu.
+Tìm kiếm theo mã tuyến, tên tải, dự án hoặc tủ nguồn.
+Mở lại một bản ghi để tính lại.
+Sửa bản ghi.
+Nhân bản tuyến.
+Không xóa vật lý; dùng trạng thái Hủy.
+Khi sửa phải tăng số phiên bản.
+Lưu đầy đủ lịch sử thay đổi vào ChangeLog.
+2. Thuật toán chọn cáp
+Cải tiến lựa chọn phương án theo thứ tự:
+Đạt dòng tải hiệu chỉnh.
+Đạt giới hạn sụt áp.
+Số tuyến song song ít nhất.
+Tổng tiết diện cáp nhỏ nhất.
+Ưu tiên tiết diện thông dụng.
+Cảnh báo khi dòng giữa các tuyến có thể không cân bằng.
+Hiển thị tối thiểu 3 phương án:
+Phương án kinh tế.
+Phương án ít tuyến.
+Phương án dự phòng tốt.
+Ví dụ:
+2 × Cu/XLPE 4×240 mm² + PE
+Phải hiển thị:
+Dòng mỗi tuyến.
+Dòng cho phép mỗi tuyến.
+Dòng cho phép tổng.
+Sụt áp V và %.
+Hệ số sử dụng cáp.
+Số lượng ống.
+Cỡ ống.
+Tổng tiết diện kim loại dẫn điện.
+3. Chọn MCCB
+Bổ sung:
+Đề xuất dòng định mức MCCB.
+Kiểm tra điều kiện:
+Ib ≤ In ≤ Iz
+Trong đó:
+Ib: dòng thiết kế.
+In: dòng định mức MCCB.
+Iz: dòng cho phép của cáp.
+Cho phép quản lý danh mục MCCB trong sheet mới BreakerCatalog.
+Các cột đề xuất:
+Hãng
+Dòng định mức
+Số cực
+Icu
+Loại
+Hoạt động
+4. Dây PE và trung tính
+Tự đề xuất:
+Tiết diện dây PE.
+Tiết diện dây trung tính.
+Cho phép chọn trung tính 50%, 100% hoặc tự động.
+Cho phép cấu hình quy tắc PE trong sheet Settings.
+5. Ống luồn và máng cáp
+Bổ sung:
+Tính diện tích chiếm chỗ của toàn bộ dây.
+Chọn số lượng ống song song.
+Tỷ lệ lấp đầy thực tế.
+Cảnh báo khi vượt giới hạn.
+Thêm sheet CableTrayCatalog.
+Đề xuất máng cáp theo tỷ lệ lấp đầy cấu hình.
+6. Giao diện
+Thiết kế chuyên nghiệp, rõ ràng, dùng tốt trên điện thoại:
+Thanh điều hướng dưới màn hình.
+Các tab:
+Tính toán
+Tuyến cáp
+Danh mục
+Cài đặt
+Có trạng thái đang tải.
+Có thông báo thành công và lỗi.
+Có bảng kết quả responsive.
+Có chế độ sáng và tối.
+Không sử dụng thư viện ngoài nếu không cần thiết.
+7. Dashboard
+Bổ sung dashboard đọc từ Google Sheet:
+Tổng số tuyến cáp.
+Tổng chiều dài.
+Tổng chiều dài theo tiết diện.
+Tổng số tuyến theo dự án.
+Tuyến có sụt áp cao.
+Tuyến chưa được duyệt.
+Tuyến đang thi công.
+Khối lượng cáp Cu và Al ước tính.
+8. Xuất báo cáo
+Bổ sung:
+Xuất PDF cho một tuyến cáp.
+Xuất bảng tổng hợp CSV.
+In phiếu tính chọn cáp.
+Báo cáo phải có:
+dự án;
+thông số tải;
+công thức;
+kết quả;
+phương án đề xuất;
+cảnh báo kỹ thuật;
+người lập;
+thời gian lập.
+9. Bảo mật và ổn định
+Không dùng token bí mật ở frontend.
+Chỉ dùng google.script.run.
+Kiểm tra dữ liệu đầu vào ở cả frontend và backend.
+Chống formula injection khi ghi vào Google Sheet.
+Dùng LockService khi ghi dữ liệu.
+Không đọc toàn bộ Sheet nếu không cần.
+Dùng CacheService cho danh mục kỹ thuật.
+Có xử lý lỗi rõ ràng.
+Không dùng eval.
+Không tin dữ liệu gửi từ trình duyệt.
+10. Quy tắc cập nhật thiết kế
+Các giá trị sau phải chỉnh được trực tiếp trong Google Sheet mà không cần deploy lại:
+giới hạn sụt áp;
+hệ số dự phòng;
+số tuyến song song tối đa;
+dòng cho phép cáp;
+hệ số nhiệt độ;
+hệ số nhóm;
+danh mục ống;
+danh mục MCCB;
+quy tắc dây PE;
+tỷ lệ lấp đầy;
+tiền tố mã tuyến;
+danh sách dự án.
+Yêu cầu đầu ra
+Hãy trả đầy đủ mã nguồn, không viết mã giả.
+Trình bày lần lượt:
+Danh sách sheet cần bổ sung hoặc thay đổi.
+Cấu trúc cột cho từng sheet.
+Toàn bộ mã Code.gs.
+Toàn bộ mã Index.html.
+Toàn bộ mã Styles.html.
+Toàn bộ mã JavaScript.html.
+Toàn bộ appsscript.json.
+Hướng dẫn triển khai.
+Checklist kiểm thử.
+Các điểm cần kiểm tra kỹ thuật trước khi dùng thực tế.
+Khi sửa mã hiện có, phải giữ nguyên Spreadsheet ID:
+1TD2JsMVwRk0KXUCPbtRiKF4UePzfyiw5LX5FKzJwlHU

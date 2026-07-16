@@ -1,0 +1,991 @@
+window.onerror = function(message, source, lineno, colno, error) {
+  try {
+    const loader = document.getElementById('loading');
+    if (loader) {
+      loader.querySelector('p').innerHTML = `<span style="color:#d9383a; font-weight:bold;">Lỗi JavaScript: ${message}<br><small>Tệp: ${String(source).split('/').pop()} | Dòng: ${lineno}</small></span>`;
+    }
+  } catch (e) {}
+  return false;
+};
+
+let db = { settings: [], cables: [], temperatureFactors: [], groupingFactors: [], conduits: [], breakers: [], trays: [], projects: [] };
+let savedRecords = [];
+let calculationOptions = { eco: null, few: null, back: null };
+let selectedOptionType = 'eco'; // 'eco', 'few', 'back'
+let currentResult = null;
+
+// Helpers
+const $ = id => document.getElementById(id);
+const n = id => Number($(id).value);
+
+const safeStorage = {
+  getItem(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      return null;
+    }
+  },
+  setItem(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (e) {}
+  }
+};
+
+function init() {
+  // Setup theme safely
+  if (safeStorage.getItem('theme') === 'light') {
+    document.body.classList.remove('dark');
+  } else {
+    document.body.classList.add('dark');
+  }
+  loadInitialData();
+}
+
+if (document.readyState !== 'loading') {
+  init();
+} else {
+  document.addEventListener('DOMContentLoaded', init);
+}
+
+function toggleTheme() {
+  const body = document.body;
+  if (body.classList.contains('dark')) {
+    body.classList.remove('dark');
+    safeStorage.setItem('theme', 'light');
+  } else {
+    body.classList.add('dark');
+    safeStorage.setItem('theme', 'dark');
+  }
+}
+
+function showLoading(show, msg) {
+  const loader = $('loading');
+  if (show) {
+    loader.classList.remove('hidden');
+    if (msg) loader.querySelector('p').textContent = msg;
+  } else {
+    loader.classList.add('hidden');
+  }
+}
+
+function showAlert(msg, isError = false) {
+  const banner = $('alert-banner');
+  const msgEl = $('alert-msg');
+  msgEl.textContent = msg;
+  if (isError) {
+    banner.style.borderTopColor = '#d9383a';
+  } else {
+    banner.style.borderTopColor = 'var(--green)';
+  }
+  banner.classList.remove('hidden');
+  setTimeout(hideAlert, 6000);
+}
+
+function hideAlert() {
+  $('alert-banner').classList.add('hidden');
+}
+
+function loadInitialData(force = false) {
+  showLoading(true, 'Đang tải dữ liệu cấu hình từ Google Sheet...');
+  google.script.run
+    .withSuccessHandler(data => {
+      db = data;
+      
+      // Load projects dropdown
+      const projectSelect = $('project');
+      projectSelect.innerHTML = data.projects.map(p => 
+        `<option value="${p['Tên dự án']}">${p['Tên dự án']} (${p['Mã dự án']})</option>`
+      ).join('');
+      
+      // Load settings table
+      const settingsTable = $('settings-table-body');
+      settingsTable.innerHTML = data.settings.map(s => 
+        `<tr>
+          <td style="font-weight:700;">${s['Khóa']}</td>
+          <td>${s['Giá trị']}</td>
+         </tr>`
+      ).join('');
+      
+      // Set defaults from settings
+      const settingsMap = Object.fromEntries(data.settings.map(x => [x['Khóa'], x['Giá trị']]));
+      if (settingsMap.DEFAULT_RESERVE_FACTOR) $('reserve').value = settingsMap.DEFAULT_RESERVE_FACTOR;
+      if (settingsMap.MAX_VOLTAGE_DROP) $('maxDrop').value = settingsMap.MAX_VOLTAGE_DROP;
+      
+      // Load saved records
+      loadCableRoutes();
+    })
+    .withFailureHandler(err => {
+      showLoading(false);
+      showAlert('Lỗi tải dữ liệu ban đầu: ' + (err.message || err), true);
+    })
+    .getInitialData(force);
+}
+
+function refreshSettingsCache() {
+  loadInitialData(true);
+}
+
+function loadCableRoutes() {
+  showLoading(true, 'Đang tải danh sách tuyến cáp...');
+  google.script.run
+    .withSuccessHandler(records => {
+      savedRecords = records;
+      renderRoutes();
+      if (db.cables && db.cables.length > 0) {
+        calculate();
+      }
+      showLoading(false);
+    })
+    .withFailureHandler(err => {
+      showLoading(false);
+      showAlert('Lỗi tải danh sách tuyến cáp: ' + (err.message || err), true);
+    })
+    .getCableRecords();
+}
+
+// Phase change handler
+function onPhaseChange() {
+  const phase = $('phase').value;
+  const volt = $('voltage');
+  if (phase === '3') {
+    volt.value = 380;
+  } else {
+    volt.value = 220;
+  }
+  calculate();
+}
+
+// Navigation Tabs switching
+function switchTab(tabId) {
+  // Toggle tab contents
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  $(`tab-${tabId}`).classList.add('active');
+  
+  // Toggle bottom nav items
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  $(`nav-${tabId}`).classList.add('active');
+  
+  if (tabId === 'dash') {
+    renderDashboard();
+  } else if (tabId === 'routes') {
+    renderRoutes();
+  } else if (tabId === 'catalog') {
+    switchCatalog('cables');
+  }
+}
+
+// Calculation Engine
+function current() {
+  const p = n('power') * 1000;
+  const v = n('voltage');
+  const pf = n('pf');
+  const eff = n('eff');
+  if (v <= 0 || pf <= 0 || eff <= 0) return 0;
+  return $('phase').value === '3' ? p / (Math.sqrt(3) * v * pf * eff) : p / (v * pf * eff);
+}
+
+function tempFactor() {
+  const rows = db.temperatureFactors.filter(r => String(r['Cách điện']).toUpperCase() === $('insulation').value.toUpperCase());
+  if (!rows.length) return 1.0;
+  const target = n('ambient');
+  return rows.reduce((a, b) => Math.abs(Number(b['Nhiệt độ (°C)']) - target) < Math.abs(Number(a['Nhiệt độ (°C)']) - target) ? b : a)['Hệ số'];
+}
+
+function groupFactor() {
+  const rows = db.groupingFactors;
+  if (!rows.length) return 1.0;
+  const target = n('circuits');
+  return rows.reduce((a, b) => Math.abs(Number(b['Số mạch đi chung']) - target) < Math.abs(Number(a['Số mạch đi chung']) - target) ? b : a)['Hệ số'];
+}
+
+function dropFor(cable, totalCurrent, runs) {
+  const pf = n('pf');
+  const sin = Math.sqrt(Math.max(0, 1 - pf * pf));
+  const L = n('length');
+  const V = n('voltage');
+  const I = totalCurrent / runs;
+  const rho = Number(cable['Điện trở quy đổi (Ω·mm²/m)']);
+  const S = Number(cable['Tiết diện (mm²)']);
+  const x = Number(cable['Điện kháng (Ω/km)']) / 1000;
+  
+  const factor = $('phase').value === '3' ? Math.sqrt(3) : 2;
+  const volts = factor * I * L * ((rho / S) * pf + x * sin);
+  return { volts, percent: (volts / V) * 100 };
+}
+
+function roundToStandardSize(targetSize, list) {
+  const found = list.find(c => Number(c['Tiết diện (mm²)']) >= targetSize);
+  return found ? Number(found['Tiết diện (mm²)']) : targetSize;
+}
+
+function getOuterDiameter(size) {
+  if (!size || size <= 0) return 0;
+  const found = db.cables.find(c => 
+    Number(c['Tiết diện (mm²)']) === size && 
+    c['Vật liệu'] === $('material').value && 
+    c['Cách điện'] === $('insulation').value
+  );
+  return found ? Number(found['Đường kính ngoài (mm)']) : 0;
+}
+
+function calculate() {
+  if (!db.cables || !db.cables.length) return;
+  
+  const I = current();
+  const Id = I * n('reserve');
+  const tf = tempFactor();
+  const gf = groupFactor();
+  const max = n('maxDrop');
+  
+  const list = db.cables.filter(c => c['Vật liệu'] === $('material').value && c['Cách điện'] === $('insulation').value)
+    .sort((a, b) => Number(a['Tiết diện (mm²)']) - Number(b['Tiết diện (mm²)']));
+  
+  if (!list.length) {
+    $('recommendation').textContent = 'Chưa có cáp phù hợp';
+    $('calc-status').textContent = 'Không tìm thấy cỡ cáp tương thích trong catalog.';
+    return;
+  }
+  
+  const settingsMap = Object.fromEntries(db.settings.map(x => [x['Khóa'], x['Giá trị']]));
+  const maxRuns = Number(settingsMap.MAX_PARALLEL_RUNS || 6);
+  
+  // Find all valid options
+  const candidates = [];
+  for (let runs = 1; runs <= maxRuns; runs++) {
+    for (const c of list) {
+      const baseAmp = Number(c['Dòng cơ sở (A)']);
+      const totalAmp = baseAmp * tf * gf * runs;
+      const d = dropFor(c, I, runs);
+      
+      if (totalAmp >= Id && d.percent <= max) {
+        candidates.push({
+          cable: c,
+          runs,
+          totalAmp,
+          d,
+          S: Number(c['Tiết diện (mm²)'])
+        });
+        break; // Smallest size for this number of runs that fits current and voltage drop
+      }
+    }
+  }
+  
+  if (!candidates.length) {
+    $('recommendation').textContent = 'Không có phương án';
+    $('calc-status').textContent = 'Vui lòng giảm chiều dài, tăng điện áp hoặc bổ sung tiết diện cáp lớn hơn.';
+    calculationOptions = { eco: null, few: null, back: null };
+    currentResult = null;
+    return;
+  }
+  
+  // 1. Economic: smallest total metal cross section (runs * S), if equal, fewer runs
+  const ecoOption = [...candidates].sort((a, b) => (a.runs * a.S) - (b.runs * b.S) || a.runs - b.runs)[0];
+  
+  // 2. Fewest Runs: smallest runs, if equal, smallest S
+  const fewOption = [...candidates].sort((a, b) => a.runs - b.runs || a.S - b.S)[0];
+  
+  // 3. Backup: same runs as eco, but S is 1 level larger (or utilization factor < 0.8)
+  let backOption = null;
+  const sameRunsCables = list.filter(c => Number(c['Tiết diện (mm²)']) > ecoOption.S);
+  if (sameRunsCables.length > 0) {
+    const nextSizeCable = sameRunsCables[0];
+    const d = dropFor(nextSizeCable, I, ecoOption.runs);
+    const baseAmp = Number(nextSizeCable['Dòng cơ sở (A)']);
+    const totalAmp = baseAmp * tf * gf * ecoOption.runs;
+    if (d.percent <= max) {
+      backOption = {
+        cable: nextSizeCable,
+        runs: ecoOption.runs,
+        totalAmp,
+        d,
+        S: Number(nextSizeCable['Tiết diện (mm²)'])
+      };
+    }
+  }
+  
+  if (!backOption) {
+    const lowUtil = candidates.filter(c => (Id / c.totalAmp) < 0.8);
+    backOption = lowUtil.length > 0 ? lowUtil[0] : ecoOption;
+  }
+  
+  calculationOptions = {
+    eco: ecoOption,
+    few: fewOption,
+    back: backOption
+  };
+  
+  // Set calculation output display based on current selection
+  selectOption(selectedOptionType);
+}
+
+function selectOption(type) {
+  selectedOptionType = type;
+  
+  // Toggle option button style
+  document.querySelectorAll('.opt-tab').forEach(el => el.classList.remove('active'));
+  $(`btn-opt-${type}`).classList.add('active');
+  
+  const opt = calculationOptions[type];
+  if (!opt) {
+    $('recommendation').textContent = 'Chưa có phương án';
+    return;
+  }
+  
+  const optLabels = { eco: 'PHƯƠNG ÁN KINH TẾ', few: 'PHƯƠNG ÁN ÍT TUYẾN NHẤT', back: 'PHƯƠNG ÁN DỰ PHÒNG TỐT' };
+  $('opt-title').textContent = optLabels[type];
+  
+  const I = current();
+  const Id = I * n('reserve');
+  const size = opt.S;
+  
+  $('recommendation').textContent = `${opt.runs} × ${$('material').value} ${size} mm²/pha`;
+  $('calc-status').textContent = `Mỗi tuyến mang dòng ~ ${(I / opt.runs).toFixed(1)} A; hiệu suất an toàn.`;
+  
+  $('loadCurrent').textContent = I.toFixed(1) + ' A';
+  $('designCurrent').textContent = Id.toFixed(1) + ' A';
+  $('correctedAmpacity').textContent = opt.totalAmp.toFixed(1) + ' A';
+  $('drop').textContent = opt.d.percent.toFixed(2) + '%';
+  
+  // Calculate Neutral size
+  const is3Phase = $('phase').value === '3';
+  const neutralRuleVal = $('neutralRule').value;
+  let Sn = size;
+  if (is3Phase) {
+    if (neutralRuleVal === '50') {
+      Sn = size / 2;
+    } else if (neutralRuleVal === 'Auto') {
+      Sn = size <= 16 ? size : size / 2;
+      if (Sn < 16 && size > 16) Sn = 16;
+    }
+  }
+  // Round Sn to standard catalog sizes
+  const list = db.cables.filter(c => c['Vật liệu'] === $('material').value && c['Cách điện'] === $('insulation').value)
+    .sort((a, b) => Number(a['Tiết diện (mm²)']) - Number(b['Tiết diện (mm²)']));
+  Sn = roundToStandardSize(Sn, list);
+  
+  // Calculate PE size
+  let Spe = size;
+  if (size <= 16) {
+    Spe = size;
+  } else if (size <= 35) {
+    Spe = 16;
+  } else {
+    Spe = size / 2;
+  }
+  Spe = roundToStandardSize(Spe, list);
+  
+  // Recommend MCCB
+  let recommendedBreaker = null;
+  const phasePoles = is3Phase ? ['3P', '4P'] : ['1P', '2P'];
+  const activeBreakers = db.breakers.filter(b => 
+    phasePoles.includes(String(b['Số cực']).toUpperCase()) &&
+    Number(b['Dòng định mức (A)']) >= Id &&
+    Number(b['Dòng định mức (A)']) <= opt.totalAmp
+  ).sort((a, b) => Number(a['Dòng định mức (A)']) - Number(b['Dòng định mức (A)']));
+  
+  if (activeBreakers.length > 0) {
+    recommendedBreaker = activeBreakers[0];
+  } else {
+    // Fallback: pick nearest higher rating breaker if Ib <= In is met
+    const fallbackBreakers = db.breakers.filter(b => 
+      phasePoles.includes(String(b['Số cực']).toUpperCase()) &&
+      Number(b['Dòng định mức (A)']) >= Id
+    ).sort((a, b) => Number(a['Dòng định mức (A)']) - Number(b['Dòng định mức (A)']));
+    if (fallbackBreakers.length > 0) {
+      recommendedBreaker = fallbackBreakers[0];
+    }
+  }
+  
+  // Display MCCB details
+  if (recommendedBreaker) {
+    $('aux-mccb').innerHTML = `<strong>${recommendedBreaker['Hãng']} ${recommendedBreaker['Dòng định mức (A)']}A</strong><br><small>${recommendedBreaker['Số cực']} / Icu: ${recommendedBreaker['Icu (kA)']}kA / ${recommendedBreaker['Loại']}</small>`;
+  } else {
+    $('aux-mccb').innerHTML = `<span style="color:#d9383a;">Không tìm thấy MCCB thích hợp</span>`;
+  }
+  
+  // Display Neutral & PE sizing
+  $('aux-n-pe').innerHTML = `<strong>N: ${Sn} mm² | PE: ${Spe} mm²</strong><br><small>Hệ thống: ${is3Phase ? '3P+N+PE' : '1P+N+PE'}</small>`;
+  
+  // Calculate Conduit Size
+  const Dp = getOuterDiameter(size);
+  const Dn = Sn > 0 ? getOuterDiameter(Sn) : 0;
+  const Dpe = Spe > 0 ? getOuterDiameter(Spe) : 0;
+  
+  const Nphase = is3Phase ? 3 : 1;
+  const A_cables = (Nphase * (Math.PI * Dp * Dp / 4)) + (Sn > 0 ? (Math.PI * Dn * Dn / 4) : 0) + (Spe > 0 ? (Math.PI * Dpe * Dpe / 4) : 0);
+  
+  const settingsMap = Object.fromEntries(db.settings.map(x => [x['Khóa'], x['Giá trị']]));
+  const maxConduitFill = Number(settingsMap.MAX_CONDUIT_FILL_RATE || 0.40);
+  const maxTrayFill = Number(settingsMap.MAX_TRAY_FILL_RATE || 0.50);
+  
+  const A_conduit_req = A_cables / maxConduitFill;
+  
+  let recommendedConduit = db.conduits.sort((a, b) => Number(a['Đường kính trong (mm)']) - Number(b['Đường kính trong (mm)']))
+    .find(c => (Math.PI * Math.pow(Number(c['Đường kính trong (mm)']), 2) / 4) >= A_conduit_req);
+  
+  if (recommendedConduit) {
+    const dInt = Number(recommendedConduit['Đường kính trong (mm)']);
+    const conduitFill = (A_cables / (Math.PI * dInt * dInt / 4)) * 100;
+    $('aux-conduit').innerHTML = `<strong>${opt.runs} ống × ${recommendedConduit['Tên ống']}</strong><br><small>Tỉ lệ lấp đầy: ${conduitFill.toFixed(1)}% (Max ${maxConduitFill*100}%)</small>`;
+  } else {
+    $('aux-conduit').innerHTML = `<strong>${opt.runs} ống × &gt;D200</strong><br><small>Vượt ngưỡng ống luồn có sẵn</small>`;
+  }
+  
+  // Calculate Cable Tray Sizing
+  // Width required: cables laid side-by-side
+  const W_req = opt.runs * (Nphase * Dp + (Sn > 0 ? Dn : 0) + (Spe > 0 ? Dpe : 0));
+  const A_total_cables = opt.runs * A_cables;
+  
+  let recommendedTray = db.trays.sort((a, b) => (Number(a['Rộng (mm)']) * Number(a['Cao (mm)'])) - (Number(b['Rộng (mm)']) * Number(b['Cao (mm)'])))
+    .find(t => 
+      Number(t['Rộng (mm)']) >= W_req && 
+      (Number(t['Rộng (mm)']) * Number(t['Cao (mm)']) * maxTrayFill) >= A_total_cables
+    );
+  
+  let trayFillRate = 0;
+  if (recommendedTray) {
+    const w = Number(recommendedTray['Rộng (mm)']);
+    const h = Number(recommendedTray['Cao (mm)']);
+    trayFillRate = (A_total_cables / (w * h)) * 100;
+    $('aux-tray').innerHTML = `<strong>${recommendedTray['Tên máng']}</strong><br><small>R:${w}×C:${h}mm | Lấp đầy: ${trayFillRate.toFixed(1)}%</small>`;
+  } else {
+    $('aux-tray').innerHTML = `<span style="color:#d9383a;">Không tìm thấy máng cáp thích hợp</span>`;
+  }
+  
+  // Parallel Run Imbalance Warning
+  const warningEl = $('imbalance-warning');
+  if (opt.runs >= 2 || size >= 120) {
+    warningEl.innerHTML = `<strong>⚠️ Cảnh báo lệch dòng:</strong> Tuyến cáp song song (${opt.runs} sợi) hoặc tiết diện cáp lớn (${size} mm²). Yêu cầu thi công đảm bảo chiều dài các sợi bằng nhau tuyệt đối và xếp cáp đối xứng.`;
+    warningEl.classList.remove('hidden');
+  } else {
+    warningEl.classList.add('hidden');
+  }
+  
+  // Save current calculated state
+  currentResult = {
+    loadCurrent: I,
+    designCurrent: Id,
+    opt: opt,
+    neutralSize: Sn,
+    peSize: Spe,
+    breaker: recommendedBreaker,
+    conduit: recommendedConduit,
+    tray: recommendedTray,
+    trayFill: trayFillRate
+  };
+}
+
+// Saving route to Sheet
+function saveRecord() {
+  if (!currentResult) {
+    return showAlert('Vui lòng tính toán và chọn phương án cáp hợp lệ.', true);
+  }
+  
+  const payload = {
+    id: $('editingRecordId').value || '',
+    version: $('editingRecordVersion').value || '',
+    project: $('project').value,
+    cableCode: $('cableCode').value.trim(),
+    loadName: $('loadName').value.trim(),
+    sourcePanel: $('sourcePanel').value.trim(),
+    destinationPanel: $('destinationPanel').value.trim(),
+    phase: $('phase').value === '3' ? '3 pha' : '1 pha',
+    voltageV: n('voltage'),
+    powerKw: n('power'),
+    powerFactor: n('pf'),
+    efficiency: n('eff'),
+    lengthM: n('length'),
+    material: $('material').value,
+    insulation: $('insulation').value,
+    reserveFactor: n('reserve'),
+    ambientC: n('ambient'),
+    groupedCircuits: n('circuits'),
+    loadCurrentA: currentResult.loadCurrent,
+    designCurrentA: currentResult.designCurrent,
+    cableSizeMm2: currentResult.opt.S,
+    parallelRuns: currentResult.opt.runs,
+    cableConfiguration: `${currentResult.opt.runs} × ${$('material').value} ${currentResult.opt.S} mm²/pha`,
+    correctedAmpacityA: currentResult.opt.totalAmp,
+    voltageDropV: currentResult.opt.d.volts,
+    voltageDropPercent: currentResult.opt.d.percent,
+    conduitSize: $('aux-conduit').textContent.split(' | ')[0], // simple text
+    status: $('recordStatus').value,
+    notes: $('notes').value.trim(),
+    
+    // 9 added columns
+    neutralSize: currentResult.neutralSize,
+    peSize: currentResult.peSize,
+    breakerIn: currentResult.breaker ? Number(currentResult.breaker['Dòng định mức (A)']) : '',
+    breakerBrand: currentResult.breaker ? currentResult.breaker['Hãng'] : '',
+    breakerPoles: currentResult.breaker ? currentResult.breaker['Số cực'] : '',
+    breakerIcu: currentResult.breaker ? Number(currentResult.breaker['Icu (kA)']) : '',
+    breakerType: currentResult.breaker ? currentResult.breaker['Loại'] : '',
+    trayName: currentResult.tray ? currentResult.tray['Tên máng'] : '',
+    fillRate: currentResult.trayFill
+  };
+  
+  if (!payload.cableCode || !payload.loadName) {
+    return showAlert('Mã tuyến và Tên tải không được bỏ trống.', true);
+  }
+  
+  showLoading(true, 'Đang lưu tuyến cáp vào Google Sheet...');
+  $('saveStatus').textContent = 'Đang lưu dữ liệu...';
+  
+  google.script.run
+    .withSuccessHandler(res => {
+      showLoading(false);
+      $('saveStatus').textContent = '';
+      showAlert(`Đã lưu tuyến cáp thành công (Mã: ${payload.cableCode}, V:${res.version})`);
+      
+      // Clear edit state
+      $('editingRecordId').value = '';
+      $('editingRecordVersion').value = '';
+      $('notes').value = '';
+      
+      // Reload routes
+      loadCableRoutes();
+    })
+    .withFailureHandler(err => {
+      showLoading(false);
+      $('saveStatus').textContent = '';
+      showAlert('Lưu dữ liệu thất bại: ' + (err.message || err), true);
+    })
+    .saveCableRecord(payload);
+}
+
+// Routes List view
+function renderRoutes() {
+  const listEl = $('routes-list');
+  if (savedRecords.length === 0) {
+    listEl.innerHTML = '<p class="empty-msg">Chưa có tuyến cáp nào được lưu.</p>';
+    return;
+  }
+  
+  filterRoutes();
+}
+
+function filterRoutes() {
+  const query = $('search-input').value.toLowerCase();
+  const listEl = $('routes-list');
+  
+  const filtered = savedRecords.filter(r => 
+    String(r['cableCode']).toLowerCase().includes(query) ||
+    String(r['loadName']).toLowerCase().includes(query) ||
+    String(r['project']).toLowerCase().includes(query) ||
+    String(r['sourcePanel']).toLowerCase().includes(query) ||
+    String(r['destinationPanel']).toLowerCase().includes(query)
+  );
+  
+  if (filtered.length === 0) {
+    listEl.innerHTML = '<p class="empty-msg">Không tìm thấy tuyến cáp phù hợp.</p>';
+    return;
+  }
+  
+  listEl.innerHTML = filtered.map(r => {
+    const isImbalanced = Number(r['parallelRuns']) >= 2 || Number(r['cableSizeMm2']) >= 120;
+    const dropPercent = Number(r['voltageDropPercent'] || 0);
+    const dropAlert = dropPercent > 3 ? 'style="color:#d9383a; font-weight:bold;"' : '';
+    
+    return `
+      <div class="route-card">
+        <div class="route-info">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <h3>${r['cableCode']}</h3>
+            <span class="route-badge">${r['status']}</span>
+            <small style="color:var(--muted)">V${r['version']}</small>
+          </div>
+          <p><strong>Dự án:</strong> ${r['project']} | <strong>Tải:</strong> ${r['loadName']}</p>
+          <p><strong>Nguồn:</strong> ${r['sourcePanel']} &rarr; <strong>Đích:</strong> ${r['destinationPanel']}</p>
+          <div class="route-meta">
+            Cấu hình: <span style="color:var(--green)">${r['cableConfiguration']}</span> | 
+            PE:${r['peSize']} | N:${r['neutralSize']} | 
+            Sụt áp: <span ${dropAlert}>${dropPercent.toFixed(2)}%</span>
+            ${isImbalanced ? '<span style="color:#ffcc00; margin-left:8px;" title="Cảnh báo lệch dòng">⚠️</span>' : ''}
+          </div>
+          ${r['notes'] ? `<p style="font-style:italic; font-size:0.75rem; margin-top:5px;">Ghi chú: ${r['notes']}</p>` : ''}
+        </div>
+        <div class="route-actions">
+          <button class="route-btn" onclick="loadToEdit('${r['id']}')">Sửa</button>
+          <button class="route-btn" onclick="loadToDuplicate('${r['id']}')">Nhân bản</button>
+          <button class="route-btn" onclick="downloadPdfReport('${r['id']}', '${r['cableCode']}')">PDF</button>
+          <button class="route-btn cancel-btn" onclick="cancelRoute('${r['id']}', '${r['cableCode']}')">Hủy</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function loadToEdit(id) {
+  const r = savedRecords.find(x => x.id === id);
+  if (!r) return;
+  
+  populateForm(r);
+  $('editingRecordId').value = r.id;
+  $('editingRecordVersion').value = r.version;
+  $('notes').value = r.notes || '';
+  $('recordStatus').value = r.status || 'Dự kiến';
+  
+  switchTab('calc');
+  calculate();
+  showAlert(`Đã tải thông số tuyến ${r.cableCode} để sửa.`);
+}
+
+function loadToDuplicate(id) {
+  const r = savedRecords.find(x => x.id === id);
+  if (!r) return;
+  
+  populateForm(r);
+  $('editingRecordId').value = '';
+  $('editingRecordVersion').value = '';
+  $('notes').value = '';
+  $('recordStatus').value = 'Dự kiến';
+  
+  // Set new code prefix
+  if (r.cableCode) {
+    const baseCode = r.cableCode.replace(/-\d+$/, '');
+    $('cableCode').value = baseCode + '_DUP';
+  }
+  
+  switchTab('calc');
+  calculate();
+  showAlert(`Đã nhân bản thông số tuyến ${r.cableCode}. Vui lòng kiểm tra mã tuyến mới.`);
+}
+
+function populateForm(r) {
+  $('project').value = r.project;
+  $('cableCode').value = r.cableCode;
+  $('loadName').value = r.loadName;
+  $('sourcePanel').value = r.sourcePanel;
+  $('destinationPanel').value = r.destinationPanel;
+  $('phase').value = String(r.phase).includes('3') ? '3' : '1';
+  $('voltage').value = r.voltageV;
+  $('power').value = r.powerKw;
+  $('pf').value = r.powerFactor;
+  $('eff').value = r.efficiency;
+  $('length').value = r.lengthM;
+  $('material').value = r.material;
+  $('insulation').value = r.insulation;
+  $('reserve').value = r.reserveFactor;
+  $('ambient').value = r.ambientC;
+  $('circuits').value = r.groupedCircuits;
+  
+  const settingsMap = Object.fromEntries(db.settings.map(x => [x['Khóa'], x['Giá trị']]));
+  $('maxDrop').value = settingsMap.MAX_VOLTAGE_DROP || 5;
+}
+
+function cancelRoute(id, code) {
+  if (!confirm(`Bạn có chắc chắn muốn HỦY tuyến cáp ${code} không?\nTuyến sẽ không xuất hiện trong danh sách hoạt động nhưng lịch sử vẫn được giữ lại.`)) {
+    return;
+  }
+  
+  showLoading(true, `Đang hủy tuyến cáp ${code}...`);
+  google.script.run
+    .withSuccessHandler(() => {
+      showLoading(false);
+      showAlert(`Đã hủy tuyến cáp ${code} thành công.`);
+      loadCableRoutes();
+    })
+    .withFailureHandler(err => {
+      showLoading(false);
+      showAlert('Lỗi khi hủy tuyến cáp: ' + (err.message || err), true);
+    })
+    .cancelCableRecord(id);
+}
+
+function downloadPdfReport(id, code) {
+  showLoading(true, `Đang xuất báo cáo PDF cho tuyến ${code}...`);
+  google.script.run
+    .withSuccessHandler(base64 => {
+      showLoading(false);
+      const link = document.createElement('a');
+      link.href = 'data:application/pdf;base64,' + base64;
+      link.download = `Bao_cao_tuyen_cap_${code}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showAlert(`Đã tải xuống báo cáo PDF của tuyến ${code}.`);
+    })
+    .withFailureHandler(err => {
+      showLoading(false);
+      showAlert('Lỗi xuất PDF: ' + (err.message || err), true);
+    })
+    .generatePdfReport(id);
+}
+
+// Client-side CSV Exporter
+function exportCSV() {
+  if (savedRecords.length === 0) {
+    return showAlert('Không có dữ liệu tuyến cáp nào để xuất.', true);
+  }
+  
+  const headers = [
+    'ID', 'Version', 'Ngày lập', 'Người lập', 'Dự án', 'Mã tuyến', 'Tên tải', 
+    'Tủ nguồn', 'Thiết bị đích', 'Hệ thống', 'Điện áp (V)', 'Công suất (kW)', 
+    'cosφ', 'Hiệu suất', 'Chiều dài (m)', 'Vật liệu', 'Cách điện', 
+    'Hệ số dự phòng', 'Nhiệt độ (°C)', 'Số mạch đi chung', 'Dòng tải (A)', 
+    'Dòng thiết kế (A)', 'Tiết diện pha (mm²)', 'Số tuyến song song', 
+    'Cấu hình cáp', 'Dòng sau hiệu chỉnh (A)', 'Sụt áp (V)', 'Sụt áp (%)', 
+    'Ống luồn', 'Trạng thái', 'Ghi chú', 'Tiết diện trung tính (mm²)', 
+    'Tiết diện PE (mm²)', 'Dòng MCCB (A)', 'Hãng MCCB', 'Số cực MCCB', 
+    'Icu MCCB (kA)', 'Loại MCCB', 'Tên máng cáp', 'Lấp đầy máng (%)'
+  ];
+  
+  const keys = [
+    'id', 'version', 'date', 'user', 'project', 'cableCode', 'loadName',
+    'sourcePanel', 'destinationPanel', 'phase', 'voltageV', 'powerKw',
+    'powerFactor', 'efficiency', 'lengthM', 'material', 'insulation',
+    'reserveFactor', 'ambientC', 'groupedCircuits', 'loadCurrentA',
+    'designCurrentA', 'cableSizeMm2', 'parallelRuns', 'cableConfiguration',
+    'correctedAmpacityA', 'voltageDropV', 'voltageDropPercent', 'conduitSize',
+    'status', 'notes', 'neutralSize', 'peSize', 'breakerIn',
+    'breakerBrand', 'breakerPoles', 'breakerIcu', 'breakerType',
+    'trayName', 'fillRate'
+  ];
+  
+  const csvRows = [];
+  csvRows.push(headers.join(','));
+  
+  savedRecords.forEach(r => {
+    const values = keys.map(k => {
+      let val = r[k];
+      if (val === undefined || val === null) {
+        val = '';
+      } else if (k === 'date') {
+        val = new Date(val).toLocaleString('vi-VN');
+      }
+      // Escape commas and quotes
+      const str = String(val).replace(/"/g, '""');
+      return `"${str}"`;
+    });
+    csvRows.push(values.join(','));
+  });
+  
+  const csvString = csvRows.join('\n');
+  const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), csvString], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", `Bảng_tổng_hợp_tuyến_cáp_${new Date().toISOString().slice(0,10)}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  showAlert('Đã xuất bảng tổng hợp CSV thành công.');
+}
+
+// Catalog viewers switching
+function switchCatalog(catType) {
+  document.querySelectorAll('.catalog-tabs .opt-tab').forEach(el => el.classList.remove('active'));
+  $(`cat-btn-${catType}`).classList.add('active');
+  
+  const contentEl = $('cat-content');
+  if (catType === 'cables') {
+    contentEl.innerHTML = `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Vật liệu</th>
+            <th>Cách điện</th>
+            <th>Tiết diện (mm²)</th>
+            <th>Dòng cơ sở (A)</th>
+            <th>Điện trở (Ω/km)</th>
+            <th>Đường kính ngoài (mm)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${db.cables.slice(0, 50).map(c => `
+            <tr>
+              <td>${c['Vật liệu']}</td>
+              <td>${c['Cách điện']}</td>
+              <td style="font-weight:700;">${c['Tiết diện (mm²)']}</td>
+              <td>${c['Dòng cơ sở (A)']}</td>
+              <td>${c['Điện trở quy đổi (Ω·mm²/m)']}</td>
+              <td>${c['Đường kính ngoài (mm)']}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } else if (catType === 'breakers') {
+    contentEl.innerHTML = `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Hãng</th>
+            <th>Dòng định mức (A)</th>
+            <th>Số cực</th>
+            <th>Icu (kA)</th>
+            <th>Loại</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${db.breakers.map(b => `
+            <tr>
+              <td style="font-weight:700;">${b['Hãng']}</td>
+              <td>${b['Dòng định mức (A)']}</td>
+              <td>${b['Số cực']}</td>
+              <td>${b['Icu (kA)']}</td>
+              <td>${b['Loại']}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } else if (catType === 'conduits') {
+    contentEl.innerHTML = `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Tên ống</th>
+            <th>Đường kính trong (mm)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${db.conduits.map(c => `
+            <tr>
+              <td style="font-weight:700;">${c['Tên ống']}</td>
+              <td>${c['Đường kính trong (mm)']}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } else if (catType === 'trays') {
+    contentEl.innerHTML = `
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Tên máng</th>
+            <th>Rộng (mm)</th>
+            <th>Cao (mm)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${db.trays.map(t => `
+            <tr>
+              <td style="font-weight:700;">${t['Tên máng']}</td>
+              <td>${t['Rộng (mm)']}</td>
+              <td>${t['Cao (mm)']}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+}
+
+// Dashboard statistics
+function renderDashboard() {
+  const activeRoutes = savedRecords;
+  $('dash-total-routes').textContent = activeRoutes.length;
+  
+  // Total Length
+  let totalLength = 0;
+  let cuMass = 0;
+  let alMass = 0;
+  const statusCounts = { 'Dự kiến': 0, 'Đã duyệt': 0, 'Thi công': 0, 'Hoàn thành': 0 };
+  const projectCounts = {};
+  const warningRoutes = [];
+  
+  const cuDensity = 0.00896; 
+  const alDensity = 0.00270;
+  
+  activeRoutes.forEach(r => {
+    const runs = Number(r.parallelRuns || 1);
+    const len = Number(r.lengthM || 0);
+    totalLength += runs * len;
+    
+    // Status breakdown
+    const st = r.status || 'Dự kiến';
+    if (statusCounts[st] !== undefined) statusCounts[st]++;
+    
+    // Projects distribution
+    const proj = r.project || 'Khác';
+    projectCounts[proj] = (projectCounts[proj] || 0) + 1;
+    
+    // Estimate Metal weights
+    const phaseSize = Number(r.cableSizeMm2 || 0);
+    const neutralSize = Number(r.neutralSize || 0);
+    const peSize = Number(r.peSize || 0);
+    const phasePoles = String(r.phase).includes('3') ? 3 : 1;
+    
+    const density = r.material === 'CU' ? cuDensity : alDensity;
+    const routeWeight = runs * len * ( (phasePoles * phaseSize) + neutralSize + peSize ) * density;
+    
+    if (r.material === 'CU') {
+      cuMass += routeWeight;
+    } else {
+      alMass += routeWeight;
+    }
+    
+    // High drop or parallel run warning
+    const dropPercent = Number(r.voltageDropPercent || 0);
+    if (dropPercent > 3 || runs >= 2 || phaseSize >= 120) {
+      warningRoutes.push(r);
+    }
+  });
+  
+  $('dash-total-length').textContent = totalLength.toLocaleString('vi-VN') + ' m';
+  $('dash-cu-mass').textContent = cuMass.toLocaleString('vi-VN', { maximumFractionDigits: 1 }) + ' kg';
+  $('dash-al-mass').textContent = alMass.toLocaleString('vi-VN', { maximumFractionDigits: 1 }) + ' kg';
+  
+  // Render Status Horizontal Bar Meters
+  const statusContainer = $('status-chart-container');
+  if (activeRoutes.length === 0) {
+    statusContainer.innerHTML = '<p class="empty-msg">Chưa có dữ liệu thống kê.</p>';
+  } else {
+    statusContainer.innerHTML = Object.entries(statusCounts).map(([status, count]) => {
+      const pct = (count / activeRoutes.length) * 100;
+      return `
+        <div class="bar-row">
+          <div class="bar-label">
+            <span>${status}</span>
+            <span>${count} tuyến (${pct.toFixed(0)}%)</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill" style="width: ${pct}%; background:${status === 'Hoàn thành' ? '#2ea44f' : (status === 'Thi công' ? '#ffcc00' : 'var(--green)')}"></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+  
+  // Render Project Horizontal Bar Meters
+  const projContainer = $('project-chart-container');
+  if (Object.keys(projectCounts).length === 0) {
+    projContainer.innerHTML = '<p class="empty-msg">Chưa có dự án nào được lưu.</p>';
+  } else {
+    projContainer.innerHTML = Object.entries(projectCounts).map(([proj, count]) => {
+      const pct = (count / activeRoutes.length) * 100;
+      return `
+        <div class="bar-row">
+          <div class="bar-label">
+            <span>${proj}</span>
+            <span>${count} tuyến</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill" style="width: ${pct}%;"></div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+  
+  // Render Warning routes table
+  const tbody = $('dash-warning-routes');
+  if (warningRoutes.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Không có tuyến cảnh báo.</td></tr>';
+  } else {
+    tbody.innerHTML = warningRoutes.map(r => `
+      <tr>
+        <td style="font-weight:700;">${r.cableCode}</td>
+        <td>${r.project}</td>
+        <td>${r.loadName}</td>
+        <td>${r.cableConfiguration}</td>
+        <td style="color:#d9383a; font-weight:bold;">${Number(r.voltageDropPercent).toFixed(2)}%</td>
+        <td>${r.status}</td>
+      </tr>
+    `).join('');
+  }
+}
